@@ -7,6 +7,17 @@ use std::{
 
 pub const ENGINE: &str = "/System/Library/CoreServices/ScreenSaverEngine.app";
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: u32) -> f64;
+}
+
+pub fn idle_time() -> Option<Duration> {
+    // Combined login session, any input event. Only elapsed time is read.
+    let seconds = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+    Duration::try_from_secs_f64(seconds).ok()
+}
+
 // Bound OS command execution so a stuck system service cannot freeze the UI.
 fn status(program: &str, args: &[&str]) -> Result<i32, String> {
     let mut child = Command::new(program)
