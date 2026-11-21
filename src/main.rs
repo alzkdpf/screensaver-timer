@@ -1,9 +1,10 @@
 #![cfg(target_os = "macos")]
 mod platform;
+mod system_settings;
 use eframe::egui::{self, Color32, FontData, FontFamily, RichText};
 use screensaver_timer::{
-    after_saver, character_stage, clock_text, confirms_saver_start, whole_seconds, AfterSaver,
-    CharacterStage, Timer, DISPLAY_DELAY, SAVER_START_TIMEOUT,
+    after_saver, clock_text, confirms_saver_start, shade_stage, whole_seconds, AfterSaver,
+    ShadeStage, Timer, DISPLAY_DELAY, SAVER_START_TIMEOUT,
 };
 use std::{
     sync::{
@@ -13,6 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use system_settings::{idle_duration, SystemTimings};
 
 #[derive(Clone)]
 struct Snapshot {
@@ -23,8 +25,8 @@ struct Snapshot {
     launches: u32,
     sleeps: u32,
     display_pending: bool,
-    character_active: bool,
-    character_runs: u32,
+    shade_active: bool,
+    shade_runs: u32,
     awaiting_saver: bool,
     busy: bool,
 }
@@ -41,8 +43,8 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
     fn saver_unobserve(handle: *mut std::ffi::c_void);
     fn oled_overlay_set_visible(visible: i32) -> i32;
-    fn read_character_delay() -> i64;
-    fn save_character_delay(seconds: i64);
+    fn read_shade_delay() -> i64;
+    fn save_shade_delay(seconds: i64);
     fn read_display_delay() -> i64;
     fn save_display_delay(seconds: i64);
     fn timer_menu_destroy(handle: *mut std::ffi::c_void);
@@ -66,7 +68,7 @@ extern "C" fn menu_seconds(state: *const std::ffi::c_void) -> i64 {
     }
 }
 
-const CHARACTER_DELAY: Duration = Duration::from_secs(60);
+const SHADE_DELAY: Duration = Duration::from_secs(60);
 
 fn delay_seconds(text: &str) -> Option<u64> {
     text.trim()
@@ -109,16 +111,9 @@ fn delay_input(ui: &mut egui::Ui, label: &str, value: &mut String, enabled: bool
 }
 
 enum Action {
-    Start {
-        idle: u64,
-        character: u64,
-        display: u64,
-    },
+    Start { idle: u64, shade: u64, display: u64 },
     Cancel,
-    Now {
-        character: u64,
-        display: u64,
-    },
+    Now { shade: u64, display: u64 },
     SaverStarted(Instant),
     SaverStopped,
 }
@@ -156,7 +151,7 @@ extern "C" fn saver_event(state: *const std::ffi::c_void, started: i32) {
 struct App {
     hours: u64,
     display_delay: String,
-    character_delay: String,
+    shade_delay: String,
     _saver_observer: SaverObserver,
     minutes: u64,
     seconds: u64,
@@ -164,6 +159,7 @@ struct App {
     _menu: MenuBar,
     snapshot: Arc<Mutex<Snapshot>>,
     detection: Arc<Mutex<String>>,
+    system_timings: Arc<Mutex<Option<SystemTimings>>>,
     dry_run: bool,
     smoke: bool,
     began: Instant,
@@ -200,18 +196,25 @@ impl App {
             launches: 0,
             sleeps: 0,
             display_pending: false,
-            character_active: false,
-            character_runs: 0,
+            shade_active: false,
+            shade_runs: 0,
             awaiting_saver: false,
             busy: false,
         }));
+        let system_timings = Arc::new(Mutex::new(None));
+        let readings = system_timings.clone();
+        thread::spawn(move || loop {
+            let timings = SystemTimings::read();
+            *readings.lock().unwrap() = Some(timings);
+            thread::sleep(Duration::from_secs(5));
+        });
         let detection = Arc::new(Mutex::new("확인 중…".into()));
         let (tx, rx) = mpsc::channel();
         let state = snapshot.clone();
         thread::spawn(move || {
             let mut timer = Timer::default();
-            let mut character_started: Option<Instant> = None;
-            let mut character_delay = CHARACTER_DELAY;
+            let mut shade_started: Option<Instant> = None;
+            let mut shade_delay = SHADE_DELAY;
             let mut saver_started: Option<Instant> = None;
             let mut request_at: Option<Instant> = None;
             let mut sleep_requested = false;
@@ -221,7 +224,7 @@ impl App {
                     Ok(action) => Some(action),
                     Err(mpsc::RecvTimeoutError::Timeout) => None,
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        if character_started.is_some() {
+                        if shade_started.is_some() {
                             unsafe { oled_overlay_set_visible(0) };
                         }
                         break;
@@ -240,7 +243,7 @@ impl App {
                 let idle = if smoke {
                     Some(Duration::MAX)
                 } else if timer.is_running()
-                    || character_started.is_some()
+                    || shade_started.is_some()
                     || saver_started.is_some()
                     || matches!(action, Some(Action::Start { .. }))
                 {
@@ -248,8 +251,8 @@ impl App {
                 } else {
                     None
                 };
-                let mut show_character = false;
-                let mut hide_character = false;
+                let mut show_shade = false;
+                let mut hide_shade = false;
                 let mut launch = false;
                 let mut sleep = false;
                 {
@@ -257,11 +260,11 @@ impl App {
                     match action {
                         Some(Action::Start {
                             idle,
-                            character,
+                            shade,
                             display,
                         }) => match timer.start(now, idle) {
                             Ok(()) => {
-                                character_delay = Duration::from_secs(character);
+                                shade_delay = Duration::from_secs(shade);
                                 display_delay = Duration::from_secs(display);
                                 s.message =
                                     "감시 중 · 입력이 들어오면 남은 시간이 초기화됩니다.".into();
@@ -274,22 +277,22 @@ impl App {
                         },
                         Some(Action::Cancel) => {
                             timer.cancel();
-                            hide_character = character_started.take().is_some();
+                            hide_shade = shade_started.take().is_some();
                             request_at = None;
                             saver_started = None;
                             s.message = "감시를 중지했습니다.".into();
                             s.error = false;
                         }
-                        Some(Action::Now { character, display }) => {
-                            character_delay = Duration::from_secs(character);
+                        Some(Action::Now { shade, display }) => {
+                            shade_delay = Duration::from_secs(shade);
                             display_delay = Duration::from_secs(display);
-                            show_character = true;
+                            show_shade = true;
                         }
-                        Some(Action::SaverStarted(_)) if character_started.take().is_some() => {
-                            hide_character = true;
+                        Some(Action::SaverStarted(_)) if shade_started.take().is_some() => {
+                            hide_shade = true;
                             timer.reset_cycle(now);
                             s.message =
-                                "macOS가 화면 보호기를 먼저 시작해 캐릭터를 닫았습니다.".into();
+                                "macOS가 화면 보호기를 먼저 시작해 레이어를 걷었습니다.".into();
                         }
                         Some(Action::SaverStarted(started))
                             if confirms_saver_start(request_at, started) =>
@@ -344,46 +347,43 @@ impl App {
                             AfterSaver::WaitForInput => {}
                         }
                     }
-                    let mut character_left = None;
-                    if let Some(started) = character_started {
-                        match character_stage(
-                            now.saturating_duration_since(started),
-                            idle,
-                            character_delay,
-                        ) {
-                            CharacterStage::Interrupted => {
-                                hide_character = true;
-                                character_started = None;
+                    let mut shade_left = None;
+                    if let Some(started) = shade_started {
+                        match shade_stage(now.saturating_duration_since(started), idle, shade_delay)
+                        {
+                            ShadeStage::Interrupted => {
+                                hide_shade = true;
+                                shade_started = None;
                                 timer.reset_cycle(now);
-                                s.message = "캐릭터를 닫고 입력 대기로 돌아갔습니다.".into();
+                                s.message = "입력이 감지되어 레이어를 걷었습니다.".into();
                             }
-                            CharacterStage::Moving(left) => character_left = Some(left),
-                            CharacterStage::Finished => {
-                                hide_character = true;
-                                character_started = None;
+                            ShadeStage::Waiting(left) => shade_left = Some(left),
+                            ShadeStage::Finished => {
+                                hide_shade = true;
+                                shade_started = None;
                                 launch = true;
                             }
                         }
                     }
-                    if !hide_character
+                    if !hide_shade
                         && request_at.is_none()
                         && saver_started.is_none()
-                        && character_started.is_none()
-                        && !show_character
+                        && shade_started.is_none()
+                        && !show_shade
                     {
-                        show_character = timer.take_due(now, idle);
+                        show_shade = timer.take_due(now, idle);
                     }
-                    s.character_active = character_started.is_some();
+                    s.shade_active = shade_started.is_some();
                     s.awaiting_saver = request_at.is_some();
                     s.running = timer.is_running()
-                        || s.character_active
+                        || s.shade_active
                         || saver_started.is_some()
                         || s.awaiting_saver;
                     s.display_pending = saver_started.is_some();
                     s.remaining = if s.awaiting_saver {
                         None
-                    } else if s.character_active {
-                        character_left
+                    } else if s.shade_active {
+                        shade_left
                     } else if s.display_pending {
                         display_left
                     } else {
@@ -395,27 +395,27 @@ impl App {
                         s.message = "macOS에 실행 요청 중…".into();
                     }
                 }
-                if hide_character {
+                if hide_shade {
                     unsafe { oled_overlay_set_visible(0) };
                 }
-                if show_character {
+                if show_shade {
                     let shown = unsafe { oled_overlay_set_visible(1) } != 0;
                     let began = Instant::now();
                     let mut s = state.lock().unwrap();
                     if shown {
-                        character_started = Some(began);
-                        s.character_active = true;
-                        s.character_runs += 1;
+                        shade_started = Some(began);
+                        s.shade_active = true;
+                        s.shade_runs += 1;
                         s.running = true;
-                        s.remaining = Some(whole_seconds(character_delay));
+                        s.remaining = Some(whole_seconds(shade_delay));
                         s.message =
-                            "캐릭터 이동 중 · 시간이 지나면 화면 보호기가 시작됩니다.".into();
+                            "화면 어둡게 표시 중 · 시간이 지나면 화면 보호기가 시작됩니다.".into();
                         s.error = false;
                     } else {
                         timer.cancel();
                         s.running = false;
                         s.remaining = None;
-                        s.message = "캐릭터를 띄우지 못했습니다. 감시를 중지했습니다.".into();
+                        s.message = "레이어를 띄우지 못했습니다. 감시를 중지했습니다.".into();
                         s.error = true;
                     }
                 }
@@ -459,7 +459,7 @@ impl App {
         if smoke {
             tx.send(Action::Start {
                 idle: 1,
-                character: 1,
+                shade: 1,
                 display: 1,
             })
             .unwrap();
@@ -469,9 +469,9 @@ impl App {
         Self {
             _menu: menu,
             _saver_observer: SaverObserver::new(tx.clone()),
-            character_delay: match unsafe { read_character_delay() } {
+            shade_delay: match unsafe { read_shade_delay() } {
                 seconds @ 1..=3600 => seconds as u64,
-                _ => CHARACTER_DELAY.as_secs(),
+                _ => SHADE_DELAY.as_secs(),
             }
             .to_string(),
             display_delay: match unsafe { read_display_delay() } {
@@ -485,6 +485,7 @@ impl App {
             tx,
             snapshot,
             detection,
+            system_timings,
             dry_run,
             smoke,
             began: Instant::now(),
@@ -501,7 +502,7 @@ impl eframe::App for App {
         let state = self.snapshot.lock().unwrap().clone();
         let running = state.running;
         let total = self.hours * 3600 + self.minutes * 60 + self.seconds;
-        let delays = delay_seconds(&self.character_delay).zip(delay_seconds(&self.display_delay));
+        let delays = delay_seconds(&self.shade_delay).zip(delay_seconds(&self.display_delay));
         let left = if running {
             state
                 .remaining
@@ -513,14 +514,14 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_rgb(247, 247, 243)).inner_margin(28.)).show(ctx, |ui| {
           egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading(RichText::new("화면 보호기 타이머").size(26.));
-            ui.label("캐릭터가 움직인 뒤 화면 보호기를 시작하고, 마지막에 화면을 끕니다.");
+            ui.label("입력이 없으면 화면을 어둡게 한 뒤 화면 보호기를 시작합니다.");
             ui.add_space(10.);
             ui.vertical_centered(|ui| {
-                ui.label(if state.awaiting_saver { "화면 보호기 시작 확인 중" } else if state.display_pending { "화면 끄기까지" } else if state.character_active { "화면 보호기까지" } else if running { "캐릭터가 나타날 때까지" } else { "대기 시간" });
+                ui.label(if state.awaiting_saver { "화면 보호기 시작 확인 중" } else if state.display_pending { "화면 끄기까지" } else if state.shade_active { "화면 보호기까지" } else if running { "화면이 어두워질 때까지" } else { "대기 시간" });
                 ui.label(RichText::new(left).monospace().size(54.));
             });
             ui.separator();
-            ui.label(RichText::new("1. OLED 보호용 캐릭터").size(17.).strong());
+            ui.label(RichText::new("1. 화면 어둡게 · 38%").size(17.).strong());
             ui.label("입력이 없을 때 기다릴 시간");
             ui.add_space(8.);
             ui.add_enabled_ui(!running && !state.busy, |ui| {
@@ -536,9 +537,9 @@ impl eframe::App for App {
             ui.separator();
             let editable = !running && !state.busy;
             ui.label(RichText::new("2. 화면 보호기 시작").size(17.).strong());
-            if delay_input(ui, "캐릭터가 나타난 뒤", &mut self.character_delay, editable) && !self.dry_run {
-                if let Some(seconds) = delay_seconds(&self.character_delay) {
-                    unsafe { save_character_delay(seconds as i64) };
+            if delay_input(ui, "레이어를 씌운 뒤", &mut self.shade_delay, editable) && !self.dry_run {
+                if let Some(seconds) = delay_seconds(&self.shade_delay) {
+                    unsafe { save_shade_delay(seconds as i64) };
                 }
             }
             ui.separator();
@@ -552,17 +553,39 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 if ui.add_enabled(editable && delays.is_some() && (1..=86400).contains(&total),
                     egui::Button::new(RichText::new("감시 시작").color(Color32::WHITE)).fill(Color32::from_rgb(29, 104, 78))).clicked() {
-                    if let Some((character, display)) = delays { self.send(Action::Start { idle: total, character, display }); }
+                    if let Some((shade, display)) = delays { self.send(Action::Start { idle: total, shade, display }); }
                 }
                 if ui.add_enabled(running, egui::Button::new("취소")).clicked() { self.send(Action::Cancel); }
-                if ui.add_enabled(editable && delays.is_some(), egui::Button::new("캐릭터 지금 시작")).clicked() {
-                    if let Some((character, display)) = delays { self.send(Action::Now { character, display }); }
+                if ui.add_enabled(editable && delays.is_some(), egui::Button::new("지금 어둡게")).clicked() {
+                    if let Some((shade, display)) = delays { self.send(Action::Now { shade, display }); }
                 }
             });
             if !(1..=86400).contains(&total) { ui.colored_label(Color32::DARK_RED, "1초부터 24시간까지 설정하세요."); }
             ui.add_space(4.);
-            if running && !state.character_active && !state.awaiting_saver && !state.display_pending && state.remaining.is_none() { ui.label("입력 상태 확인 불가 · 실행 대기 중"); }
+            if running && !state.shade_active && !state.awaiting_saver && !state.display_pending && state.remaining.is_none() { ui.label("입력 상태 확인 불가 · 실행 대기 중"); }
             ui.label(RichText::new(&state.message).color(if state.error { Color32::DARK_RED } else { Color32::from_gray(55) }));
+            ui.separator();
+            ui.label(RichText::new("macOS 시스템 설정").size(17.).strong());
+            ui.label("마지막 입력부터 적용되는 시간입니다. 위의 앱 타이머와 별도입니다.");
+            if let Some(timings) = &*self.system_timings.lock().unwrap() {
+                egui::Grid::new("macos-timings").spacing([24., 8.]).show(ui, |ui| {
+                    ui.label("화면 보호기 시작");
+                    ui.strong(idle_duration(timings.screen_saver_seconds));
+                    ui.end_row();
+                    if timings.display_sleep.is_empty() {
+                        ui.label("디스플레이 끄기");
+                        ui.strong("확인할 수 없음");
+                        ui.end_row();
+                    }
+                    for profile in &timings.display_sleep {
+                        ui.label(format!("디스플레이 끄기 · {}", profile.power_source));
+                        ui.strong(idle_duration(profile.minutes.and_then(|m| m.checked_mul(60))));
+                        ui.end_row();
+                    }
+                });
+            } else {
+                ui.label("시스템 설정을 읽는 중…");
+            }
             ui.separator();
             ui.label(RichText::new("화면 보호기 상태").strong());
             ui.label(self.detection.lock().unwrap().clone());
@@ -583,15 +606,15 @@ impl eframe::App for App {
                         && unsafe { timer_dock_badge_is_clear() != 0 }
                     {
                         self.smoke = false;
-                        println!("SMOKE_OK: character shown before simulated saver and display sleep; cancellation cleared Dock badge");
+                        println!("SMOKE_OK: shade shown before simulated saver and display sleep; cancellation cleared Dock badge");
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     } else {
                         eprintln!("SMOKE_FAILED: repeats continued after cancel");
                         std::process::exit(1);
                     }
                 }
-            } else if state.character_runs == 1
-                && !state.character_active
+            } else if state.shade_runs == 1
+                && !state.shade_active
                 && state.launches == 1
                 && state.sleeps == 1
                 && state.running
@@ -623,11 +646,26 @@ fn main() -> eframe::Result {
         );
         return Ok(());
     }
+    if args.iter().any(|a| a == "--system-timings") {
+        let timings = SystemTimings::read();
+        println!(
+            "화면 보호기 시작: {}",
+            idle_duration(timings.screen_saver_seconds)
+        );
+        for profile in timings.display_sleep {
+            println!(
+                "디스플레이 끄기 ({}): {}",
+                profile.power_source,
+                idle_duration(profile.minutes.and_then(|m| m.checked_mul(60)))
+            );
+        }
+        return Ok(());
+    }
     let smoke = args.iter().any(|a| a == "--smoke-test");
     let dry_run = smoke || args.iter().any(|a| a == "--dry-run");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([560., 830.])
+            .with_inner_size([560., 930.])
             .with_min_inner_size([470., 520.]),
         ..Default::default()
     };

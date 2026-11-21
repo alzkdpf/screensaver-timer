@@ -48,23 +48,19 @@ impl Timer {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum CharacterStage {
+pub enum ShadeStage {
     Interrupted,
-    Moving(Duration),
+    Waiting(Duration),
     Finished,
 }
 
-pub fn character_stage(
-    elapsed: Duration,
-    idle: Option<Duration>,
-    delay: Duration,
-) -> CharacterStage {
+pub fn shade_stage(elapsed: Duration, idle: Option<Duration>, delay: Duration) -> ShadeStage {
     if !idle.is_some_and(|idle| idle >= elapsed) {
-        CharacterStage::Interrupted
+        ShadeStage::Interrupted
     } else if elapsed >= delay {
-        CharacterStage::Finished
+        ShadeStage::Finished
     } else {
-        CharacterStage::Moving(delay - elapsed)
+        ShadeStage::Waiting(delay - elapsed)
     }
 }
 
@@ -124,28 +120,22 @@ mod tests {
     use Duration as D;
 
     #[test]
-    fn character_interval_must_finish_without_input() {
+    fn shade_interval_must_finish_without_input() {
         let delay = D::from_secs(60);
         assert_eq!(
-            character_stage(D::ZERO, Some(D::ZERO), delay),
-            CharacterStage::Moving(delay)
+            shade_stage(D::ZERO, Some(D::ZERO), delay),
+            ShadeStage::Waiting(delay)
         );
         assert_eq!(
-            character_stage(delay - D::from_millis(1), Some(delay), delay),
-            CharacterStage::Moving(D::from_millis(1))
+            shade_stage(delay - D::from_millis(1), Some(delay), delay),
+            ShadeStage::Waiting(D::from_millis(1))
         );
+        assert_eq!(shade_stage(delay, Some(delay), delay), ShadeStage::Finished);
         assert_eq!(
-            character_stage(delay, Some(delay), delay),
-            CharacterStage::Finished
+            shade_stage(delay, Some(D::ZERO), delay),
+            ShadeStage::Interrupted
         );
-        assert_eq!(
-            character_stage(delay, Some(D::ZERO), delay),
-            CharacterStage::Interrupted
-        );
-        assert_eq!(
-            character_stage(delay, None, delay),
-            CharacterStage::Interrupted
-        );
+        assert_eq!(shade_stage(delay, None, delay), ShadeStage::Interrupted);
     }
 
     #[test]
