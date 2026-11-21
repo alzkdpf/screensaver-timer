@@ -59,7 +59,7 @@ cd screensaver-timer
 
 ## DMG 설치와 GitHub 배포
 
-[GitHub Release](https://github.com/alzkdpf/screensaver-timer/releases/latest)에서 DMG를 받을 수 있습니다. 비공개 저장소이므로 접근 권한이 있는 GitHub 계정으로 로그인하세요.
+[GitHub Release](https://github.com/alzkdpf/screensaver-timer/releases/latest)에서 DMG를 받을 수 있습니다.
 
 1. 제공된 `Screen-Saver-Timer-1.3.0-arm64.dmg`를 엽니다.
 2. `Screen Saver Timer.app`을 같은 창의 `Applications` 바로가기로 드래그합니다.
