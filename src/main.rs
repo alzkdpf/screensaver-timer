@@ -101,7 +101,7 @@ extern "C" fn saver_event(state: *const std::ffi::c_void, started: i32) {
 
 struct App {
     hours: u64,
-    display_delay: u64,
+    display_delay: String,
     _saver_observer: SaverObserver,
     minutes: u64,
     seconds: u64,
@@ -133,7 +133,9 @@ impl App {
         cc.egui_ctx.style_mut(|s| {
             s.spacing.item_spacing = egui::vec2(10., 12.);
             s.spacing.button_padding = egui::vec2(18., 10.);
-            s.visuals.selection.bg_fill = Color32::from_rgb(29, 104, 78);
+            // egui keeps the text foreground color when drawing a selection.
+            s.visuals.selection.bg_fill = Color32::from_rgb(175, 226, 207);
+            s.visuals.selection.stroke.color = Color32::from_rgb(20, 87, 66);
         });
         let snapshot = Arc::new(Mutex::new(Snapshot {
             running: false,
@@ -331,7 +333,8 @@ impl App {
             display_delay: match unsafe { read_display_delay() } {
                 seconds @ 1..=3600 => seconds as u64,
                 _ => DISPLAY_DELAY.as_secs(),
-            },
+            }
+            .to_string(),
             hours: 0,
             minutes: if smoke { 0 } else { 5 },
             seconds: if smoke { 1 } else { 0 },
@@ -354,6 +357,12 @@ impl eframe::App for App {
         let state = self.snapshot.lock().unwrap().clone();
         let running = state.running;
         let total = self.hours * 3600 + self.minutes * 60 + self.seconds;
+        let display_delay = self
+            .display_delay
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|seconds| (1..=3600).contains(seconds));
         let left = if running {
             state
                 .remaining
@@ -386,20 +395,39 @@ impl eframe::App for App {
             });
             ui.separator();
             ui.label(RichText::new("2. 디스플레이 끄기").size(17.).strong());
-            ui.horizontal(|ui| {
-                ui.label("화면 보호기 시작 후");
-                let response = ui.add_enabled(!running && !state.busy,
-                    egui::DragValue::new(&mut self.display_delay).range(1..=3600).suffix("초"));
-                if response.changed() && !self.dry_run {
-                    unsafe { save_display_delay(self.display_delay as i64) };
-                }
-            });
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 36.),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label("화면 보호기 시작 후");
+                    ui.add_enabled_ui(!running && !state.busy, |ui| {
+                        let field = ui.add_sized(
+                            [74., 36.],
+                            egui::TextEdit::singleline(&mut self.display_delay)
+                                .font(egui::TextStyle::Monospace)
+                                .horizontal_align(egui::Align::Center).vertical_align(egui::Align::Center),
+                        );
+                        field.widget_info(|| egui::WidgetInfo::labeled(
+                            egui::WidgetType::TextEdit, true, "화면 보호기 시작 후 대기 시간(초)"));
+                        if field.changed() && !self.dry_run {
+                            if let Some(seconds) = self.display_delay.trim().parse::<u64>()
+                                .ok().filter(|seconds| (1..=3600).contains(seconds)) {
+                                unsafe { save_display_delay(seconds as i64) };
+                            }
+                        }
+                    });
+                    ui.label("초");
+                },
+            );
+            if display_delay.is_none() {
+                ui.colored_label(Color32::DARK_RED, "1~3600 사이의 초를 입력하세요.");
+            }
             ui.add_space(8.);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!running && !state.busy && (1..=86400).contains(&total),
-                    egui::Button::new(RichText::new("감시 시작").color(Color32::WHITE)).fill(Color32::from_rgb(29, 104, 78))).clicked() { self.send(Action::Start(total, self.display_delay)); }
+                if ui.add_enabled(!running && !state.busy && display_delay.is_some() && (1..=86400).contains(&total),
+                    egui::Button::new(RichText::new("감시 시작").color(Color32::WHITE)).fill(Color32::from_rgb(29, 104, 78))).clicked() { if let Some(seconds) = display_delay { self.send(Action::Start(total, seconds)); } }
                 if ui.add_enabled(running, egui::Button::new("취소")).clicked() { self.send(Action::Cancel); }
-                if ui.add_enabled(!state.busy, egui::Button::new("지금 실행")).clicked() { self.send(Action::Now(self.display_delay)); }
+                if ui.add_enabled(!state.busy && display_delay.is_some(), egui::Button::new("지금 실행")).clicked() { if let Some(seconds) = display_delay { self.send(Action::Now(seconds)); } }
             });
             if !(1..=86400).contains(&total) { ui.colored_label(Color32::DARK_RED, "1초부터 24시간까지 설정하세요."); }
             ui.add_space(4.);
