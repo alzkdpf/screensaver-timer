@@ -1,0 +1,13 @@
+/target/
+/dist/
+/.cargo/
+/.rustup/
+/work/
+.DS_Store
+
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
