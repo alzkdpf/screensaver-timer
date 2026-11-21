@@ -47,6 +47,27 @@ impl Timer {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum CharacterStage {
+    Interrupted,
+    Moving(Duration),
+    Finished,
+}
+
+pub fn character_stage(
+    elapsed: Duration,
+    idle: Option<Duration>,
+    delay: Duration,
+) -> CharacterStage {
+    if !idle.is_some_and(|idle| idle >= elapsed) {
+        CharacterStage::Interrupted
+    } else if elapsed >= delay {
+        CharacterStage::Finished
+    } else {
+        CharacterStage::Moving(delay - elapsed)
+    }
+}
+
 pub const DISPLAY_DELAY: Duration = Duration::from_secs(60);
 pub const SAVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -101,6 +122,31 @@ pub fn clock_text(seconds: u64) -> String {
 mod tests {
     use super::*;
     use Duration as D;
+
+    #[test]
+    fn character_interval_must_finish_without_input() {
+        let delay = D::from_secs(60);
+        assert_eq!(
+            character_stage(D::ZERO, Some(D::ZERO), delay),
+            CharacterStage::Moving(delay)
+        );
+        assert_eq!(
+            character_stage(delay - D::from_millis(1), Some(delay), delay),
+            CharacterStage::Moving(D::from_millis(1))
+        );
+        assert_eq!(
+            character_stage(delay, Some(delay), delay),
+            CharacterStage::Finished
+        );
+        assert_eq!(
+            character_stage(delay, Some(D::ZERO), delay),
+            CharacterStage::Interrupted
+        );
+        assert_eq!(
+            character_stage(delay, None, delay),
+            CharacterStage::Interrupted
+        );
+    }
 
     #[test]
     fn input_restarts_countdown_and_prevents_launch_at_old_deadline() {
