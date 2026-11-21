@@ -47,6 +47,43 @@ impl Timer {
     }
 }
 
+pub const DISPLAY_DELAY: Duration = Duration::from_secs(60);
+pub const SAVER_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub fn confirms_saver_start(requested: Option<Instant>, event: Instant) -> bool {
+    requested
+        .and_then(|at| event.checked_duration_since(at))
+        .is_some_and(|delay| delay < SAVER_START_TIMEOUT)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AfterSaver {
+    Cancelled,
+    Waiting(Option<Duration>),
+    SleepDisplay,
+    WaitForInput,
+}
+
+pub fn after_saver(
+    elapsed: Duration,
+    idle: Option<Duration>,
+    requested_sleep: bool,
+    delay: Duration,
+) -> AfterSaver {
+    let Some(idle) = idle else {
+        return AfterSaver::Waiting(None);
+    };
+    if idle < elapsed {
+        AfterSaver::Cancelled
+    } else if requested_sleep {
+        AfterSaver::WaitForInput
+    } else if elapsed >= delay {
+        AfterSaver::SleepDisplay
+    } else {
+        AfterSaver::Waiting(Some(delay - elapsed))
+    }
+}
+
 pub fn whole_seconds(duration: Duration) -> u64 {
     duration.as_secs() + u64::from(duration.subsec_nanos() > 0)
 }
@@ -116,6 +153,56 @@ mod tests {
         t.start(now, 1).unwrap();
         assert!(!t.take_due(now + D::from_secs(60), None));
         assert!(t.is_running());
+    }
+
+    #[test]
+    fn a_current_start_signal_is_required() {
+        let request = Instant::now();
+        assert!(!confirms_saver_start(None, request));
+        assert!(!confirms_saver_start(
+            Some(request + D::from_secs(1)),
+            request
+        ));
+        assert!(confirms_saver_start(
+            Some(request),
+            request + D::from_secs(2)
+        ));
+        assert!(!confirms_saver_start(
+            Some(request),
+            request + SAVER_START_TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn display_sleeps_after_one_minute_and_waits_for_input() {
+        assert_eq!(
+            after_saver(D::from_secs(59), Some(D::MAX), false, DISPLAY_DELAY),
+            AfterSaver::Waiting(Some(D::from_secs(1)))
+        );
+        assert_eq!(
+            after_saver(DISPLAY_DELAY, Some(D::MAX), false, DISPLAY_DELAY),
+            AfterSaver::SleepDisplay
+        );
+        assert_eq!(
+            after_saver(D::from_secs(120), Some(D::MAX), true, DISPLAY_DELAY),
+            AfterSaver::WaitForInput
+        );
+        assert_eq!(
+            after_saver(D::from_secs(121), Some(D::ZERO), true, DISPLAY_DELAY),
+            AfterSaver::Cancelled
+        );
+    }
+
+    #[test]
+    fn input_at_deadline_or_unknown_idle_prevents_display_sleep() {
+        assert_eq!(
+            after_saver(DISPLAY_DELAY, Some(D::from_secs(59)), false, DISPLAY_DELAY),
+            AfterSaver::Cancelled
+        );
+        assert_eq!(
+            after_saver(DISPLAY_DELAY, None, false, DISPLAY_DELAY),
+            AfterSaver::Waiting(None)
+        );
     }
 
     #[test]

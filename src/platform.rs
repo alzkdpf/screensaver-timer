@@ -59,6 +59,16 @@ pub fn launch(dry_run: bool) -> Result<String, String> {
     }
 }
 
+pub fn sleep_display(dry_run: bool) -> Result<(), String> {
+    if dry_run {
+        return Ok(());
+    }
+    match status("/usr/bin/pmset", &["displaysleepnow"])? {
+        0 => Ok(()),
+        code => Err(format!("디스플레이 잠자기 요청 실패 (종료 코드 {code}).")),
+    }
+}
+
 pub fn detect() -> String {
     // getuid has no preconditions. Limit observation to the current login user.
     let uid = unsafe { libc::getuid() }.to_string();

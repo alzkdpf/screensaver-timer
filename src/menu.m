@@ -66,3 +66,46 @@ int timer_menu_shows_countdown(const void *handle) {
 int timer_dock_badge_is_clear(void) {
     return NSApp.dockTile.badgeLabel.length == 0;
 }
+
+@interface SaverObserver : NSObject
+@property(nonatomic, assign) const void *state;
+@property(nonatomic, assign) void (*event)(const void *, int);
+- (void)started:(NSNotification *)notice;
+- (void)stopped:(NSNotification *)notice;
+@end
+
+@implementation SaverObserver
+- (void)started:(NSNotification *)notice {
+    if (![notice.object isEqual:@"runFromPref"]) self.event(self.state, 1);
+}
+- (void)stopped:(NSNotification *)notice {
+    if (![notice.object isEqual:@"runFromPref"]) self.event(self.state, 0);
+}
+@end
+
+void *saver_observe(const void *state, void (*event)(const void *, int)) {
+    SaverObserver *observer = [SaverObserver new];
+    observer.state = state;
+    observer.event = event;
+    NSDistributedNotificationCenter *center = NSDistributedNotificationCenter.defaultCenter;
+    [center addObserver:observer selector:@selector(started:) name:@"com.apple.screensaver.didstart"
+                 object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+    for (NSString *name in @[@"com.apple.screensaver.willstop", @"com.apple.screensaver.didstop"]) {
+        [center addObserver:observer selector:@selector(stopped:) name:name
+                     object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+    }
+    return (__bridge_retained void *)observer;
+}
+
+void saver_unobserve(void *handle) {
+    SaverObserver *observer = (__bridge_transfer SaverObserver *)handle;
+    [NSDistributedNotificationCenter.defaultCenter removeObserver:observer];
+}
+
+int64_t read_display_delay(void) {
+    return [NSUserDefaults.standardUserDefaults integerForKey:@"DisplaySleepDelaySeconds"];
+}
+
+void save_display_delay(int64_t seconds) {
+    [NSUserDefaults.standardUserDefaults setInteger:seconds forKey:@"DisplaySleepDelaySeconds"];
+}
