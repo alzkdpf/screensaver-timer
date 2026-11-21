@@ -1,4 +1,4 @@
-Screen Saver Timer 1.3.0 — Apple Silicon
+Screen Saver Timer 1.3.1 — Apple Silicon
 
 설치: Screen Saver Timer.app을 Applications 바로가기로 드래그하세요.
 DMG를 추출한 뒤 응용 프로그램 폴더에서 앱을 실행하세요.

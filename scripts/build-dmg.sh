@@ -10,8 +10,8 @@ chmod 755 "$STAGING"
 /usr/bin/ditto --noextattr --noqtn --norsrc "$APP" "$STAGING/Screen Saver Timer.app"
 ln -s /Applications "$STAGING/Applications"
 cp "$ROOT/INSTALL.txt" "$STAGING/INSTALL.txt"
-DMG="$ROOT/dist/Screen-Saver-Timer-1.3.0-arm64.dmg"
-/usr/bin/hdiutil create -volname 'Screen Saver Timer 1.3.0' -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG"
+DMG="$ROOT/dist/Screen-Saver-Timer-1.3.1-arm64.dmg"
+/usr/bin/hdiutil create -volname 'Screen Saver Timer 1.3.1' -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG"
 /usr/bin/hdiutil verify "$DMG"
 cd "$ROOT/dist"
-/usr/bin/shasum -a 256 Screen-Saver-Timer-1.3.0-arm64.dmg > SHA256SUMS.txt
+/usr/bin/shasum -a 256 Screen-Saver-Timer-1.3.1-arm64.dmg > SHA256SUMS.txt
